@@ -46,7 +46,12 @@ class PersonaPayload(BaseModel):
 
 class ScriptItemPayload(BaseModel):
     id: Optional[int] = None
-    item_type: Literal["standard", "question", "forbidden", "knowledge", "compliance"]
+    item_type: Literal["standard", "question", "forbidden", "knowledge", "compliance", "objection_handling"]
+    stage: Literal["any", "opening", "needs", "explain", "objection", "compliance", "closing"] = "any"
+    intent_tags: list[str] = Field(default_factory=list)
+    risk_tags: list[str] = Field(default_factory=list)
+    priority: int = Field(default=50, ge=0, le=100)
+    enabled: bool = True
     title: str = ""
     content: str
     sort_order: int = 0
@@ -159,6 +164,20 @@ class ChatInput(BaseModel):
     input_mode: Literal["text", "voice"] = "text"
 
 
+class SceneGenerationInput(BaseModel):
+    prompt: str = Field(min_length=1, max_length=1000)
+
+
+class SceneGenerationResult(BaseModel):
+    title: str = ""
+    description: str = ""
+    training_goal: str = ""
+    average_minutes: int = Field(default=15, ge=1, le=240)
+    opening_line: str = ""
+    entry_description: str = ""
+    persona: PersonaPayload = Field(default_factory=PersonaPayload)
+
+
 class MessageRead(BaseModel):
     id: int
     role: str
@@ -172,6 +191,10 @@ class MessageRead(BaseModel):
         from_attributes = True
 
 
+class HintResult(BaseModel):
+    message: MessageRead
+
+
 class SessionRead(BaseModel):
     id: int
     activity_id: int
@@ -179,6 +202,7 @@ class SessionRead(BaseModel):
     status: str
     assessment_status: str = "not_submitted"
     report: Optional[dict[str, Any]]
+    state_json: dict[str, Any] = Field(default_factory=dict)
     submitted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

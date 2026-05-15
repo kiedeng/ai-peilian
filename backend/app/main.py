@@ -25,10 +25,13 @@ from backend.app.schemas import (
     ChatInput,
     EvaluationReportRead,
     EvaluationReportUpdate,
+    HintResult,
     LoginInput,
     OAuthAuthorizeResult,
     OAuthProviderRead,
     PublicActivityRead,
+    SceneGenerationInput,
+    SceneGenerationResult,
     SessionRead,
     SpeechSynthesisInput,
     SpeechSynthesisResult,
@@ -138,6 +141,12 @@ def admin_create_activity(payload: ActivityPayload, _: User = Depends(require_ad
     return _get_activity(db, activity.id)
 
 
+@app.post("/api/admin/activities/generate-scene", response_model=SceneGenerationResult)
+async def admin_generate_scene(payload: SceneGenerationInput, _: User = Depends(require_admin)) -> SceneGenerationResult:
+    generated = await ai_service.generate_scene(payload.prompt.strip())
+    return SceneGenerationResult.model_validate(generated)
+
+
 @app.get("/api/admin/activities/{activity_id}", response_model=ActivityRead)
 def admin_get_activity(activity_id: int, _: User = Depends(require_admin), db: Session = Depends(get_db)) -> TrainingActivity:
     return _get_activity(db, activity_id)
@@ -232,7 +241,8 @@ def start_session(payload: StartSessionInput, user: User = Depends(get_current_u
     activity = _get_activity(db, payload.activity_id)
     if not _is_activity_visible(activity):
         raise HTTPException(status_code=400, detail="活动未发布或不在有效期内")
-    session = PracticeSession(activity_id=activity.id, user_id=user.id, status="active")
+    initial_state = ai_service.build_conversation_state(activity, [])
+    session = PracticeSession(activity_id=activity.id, user_id=user.id, status="active", state_json=initial_state)
     db.add(session)
     db.flush()
     db.add(PracticeMessage(session_id=session.id, role="ai_customer", input_mode="system", content=activity.opening_line))
@@ -253,15 +263,44 @@ def get_session(session_id: int, user: User = Depends(get_current_user), db: Ses
     return _get_session(db, session_id, user)
 
 
+@app.post("/api/practice/sessions/{session_id}/hints", response_model=HintResult)
+async def generate_hint(session_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> HintResult:
+    session = _get_session(db, session_id, user)
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail="陪练已结束，不能继续获取 AI 提示")
+    content = await ai_service.generate_hint(session.activity, session.messages)
+    message = PracticeMessage(
+        session_id=session.id,
+        role="ai_hint",
+        content=content,
+        input_mode="system",
+        metadata_json={"kind": "ai_hint"},
+    )
+    db.add(message)
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(message)
+    return HintResult(message=message)
+
+
 @app.post("/api/practice/sessions/{session_id}/messages", response_model=SessionRead)
 async def send_message(session_id: int, payload: ChatInput, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> PracticeSession:
     session = _append_user_message(session_id, payload, user, db)
     try:
-        reply = await ai_service.customer_reply(session.activity, session.messages)
+        turn = await ai_service.customer_turn(session.activity, session.messages)
     except HTTPException as exc:
         _append_system_error(session.id, f"模型服务暂时不可用：{exc.detail}", db)
         raise exc
-    db.add(PracticeMessage(session_id=session.id, role="ai_customer", content=reply, input_mode="system"))
+    session.state_json = turn.get("state") or ai_service.build_conversation_state(session.activity, session.messages)
+    metadata = {
+        "kind": "customer_turn",
+        "detected_intent": turn.get("detected_intent", ""),
+        "emotion": turn.get("emotion", ""),
+        "stage_signal": turn.get("stage_signal", ""),
+        "risk_probe": turn.get("risk_probe", ""),
+        "state": session.state_json,
+    }
+    db.add(PracticeMessage(session_id=session.id, role="ai_customer", content=turn["customer_reply"], input_mode="system", metadata_json=metadata))
     session.updated_at = datetime.utcnow()
     db.commit()
     return _get_session(db, session_id, user)
@@ -286,7 +325,16 @@ async def stream_message(session_id: int, payload: ChatInput, user: User = Depen
                 yield _sse("delta", {"content": delta})
             reply = "".join(reply_parts).strip()
             if reply:
-                stream_db.add(PracticeMessage(session_id=session_id_value, role="ai_customer", content=reply, input_mode="system"))
+                stream_session.state_json = ai_service.build_conversation_state(stream_session.activity, stream_session.messages)
+                stream_db.add(
+                    PracticeMessage(
+                        session_id=session_id_value,
+                        role="ai_customer",
+                        content=reply,
+                        input_mode="system",
+                        metadata_json={"kind": "customer_stream", "state": stream_session.state_json},
+                    )
+                )
                 stream_session.updated_at = datetime.utcnow()
                 stream_db.commit()
             done_session = _get_session(stream_db, session_id_value, stream_user)
@@ -525,6 +573,8 @@ def _validate_publish(activity: TrainingActivity) -> None:
     total_weight = sum(float(item.weight or 0) for item in activity.dimensions)
     if round(total_weight, 2) != 100:
         raise HTTPException(status_code=400, detail="评价维度权重合计必须等于 100")
+    if not any(item.enabled and item.content.strip() for item in activity.script_items):
+        raise HTTPException(status_code=400, detail="发布前请至少配置一条启用的话术或规则")
     if activity.starts_at and activity.ends_at and activity.starts_at >= activity.ends_at:
         raise HTTPException(status_code=400, detail="开始时间必须早于结束时间")
 

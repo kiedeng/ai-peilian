@@ -57,11 +57,19 @@ def ensure_compatible_schema() -> None:
         ],
         "practice_sessions": [
             ("assessment_status", "VARCHAR(30) NOT NULL DEFAULT 'not_submitted'"),
+            ("state_json", "JSON NOT NULL DEFAULT '{}'"),
             ("submitted_at", "DATETIME"),
         ],
         "practice_messages": [
             ("audio_url", "VARCHAR(500) NOT NULL DEFAULT ''"),
             ("metadata_json", "JSON NOT NULL DEFAULT '{}'"),
+        ],
+        "script_items": [
+            ("stage", "VARCHAR(40) NOT NULL DEFAULT 'any'"),
+            ("intent_tags", "JSON NOT NULL DEFAULT '[]'"),
+            ("risk_tags", "JSON NOT NULL DEFAULT '[]'"),
+            ("priority", "INTEGER NOT NULL DEFAULT 50"),
+            ("enabled", "BOOLEAN NOT NULL DEFAULT 1"),
         ],
     }
     with engine.begin() as connection:

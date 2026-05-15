@@ -46,6 +46,17 @@ const scriptTypes = [
   ['forbidden', '禁用表达'],
   ['knowledge', '知识点'],
   ['compliance', '合规红线'],
+  ['objection_handling', '异议处理'],
+];
+
+const scriptStages = [
+  ['any', '全阶段'],
+  ['opening', '开场'],
+  ['needs', '需求挖掘'],
+  ['explain', '产品解释'],
+  ['objection', '异议处理'],
+  ['compliance', '合规确认'],
+  ['closing', '收尾推进'],
 ];
 
 const steps = ['场景配置', '话术配置', '评分维度', '体验发布'];
@@ -101,7 +112,7 @@ function emptyActivity() {
 }
 
 function makeScript(type = 'standard', sort = 0) {
-  return { item_type: type, title: '', content: '', sort_order: sort };
+  return { item_type: type, stage: 'any', intent_tags: [], risk_tags: [], priority: 50, enabled: true, title: '', content: '', sort_order: sort };
 }
 
 function makeDimension(name = '', weight = 10, sort = 0) {
@@ -123,7 +134,15 @@ function fromApiActivity(activity) {
     starts_at: activity.starts_at ? toDatetimeLocal(new Date(activity.starts_at)) : '',
     ends_at: activity.ends_at ? toDatetimeLocal(new Date(activity.ends_at)) : '',
     persona: activity.persona || { ...emptyPersona },
-    script_items: activity.script_items || [],
+    script_items: (activity.script_items || []).map((item, index) => ({
+      stage: 'any',
+      intent_tags: [],
+      risk_tags: [],
+      priority: 50,
+      enabled: true,
+      sort_order: index,
+      ...item,
+    })),
     dimensions: activity.dimensions || [],
   };
 }
@@ -457,7 +476,7 @@ function ActivityEditor() {
       <StepBar active={activeStep} setActive={setActiveStep} />
       {toast && <Notice message={toast.message} kind={toast.kind} />}
       <section className="wizard-card">
-        {activeStep === 0 && <PersonaStep activity={activity} setActivity={setActivity} />}
+        {activeStep === 0 && <PersonaStep activity={activity} setActivity={setActivity} show={show} />}
         {activeStep === 1 && <ScriptStep activity={activity} setActivity={setActivity} />}
         {activeStep === 2 && <DimensionStep activity={activity} setActivity={setActivity} totalWeight={totalWeight} />}
         {activeStep === 3 && <PublishStep activity={activity} setActivity={setActivity} totalWeight={totalWeight} show={show} />}
@@ -484,12 +503,70 @@ function StepBar({ active, setActive }) {
   );
 }
 
-function PersonaStep({ activity, setActivity }) {
+function PersonaStep({ activity, setActivity, show }) {
   const persona = activity.persona;
+  const [scenePrompt, setScenePrompt] = useState('');
+  const [generatedScene, setGeneratedScene] = useState(null);
+  const [generating, setGenerating] = useState(false);
   const update = (patch) => setActivity({ ...activity, ...patch });
   const updatePersona = (patch) => setActivity({ ...activity, persona: { ...persona, ...patch } });
+
+  async function generateScene() {
+    const prompt = scenePrompt.trim();
+    if (!prompt || generating) return;
+    setGenerating(true);
+    try {
+      setGeneratedScene(await api('/api/admin/activities/generate-scene', { method: 'POST', body: JSON.stringify({ prompt }) }));
+      show('场景草稿已生成', 'success');
+    } catch (error) {
+      show(error.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function applyGeneratedScene() {
+    if (!generatedScene) return;
+    setActivity({
+      ...activity,
+      title: generatedScene.title || activity.title,
+      description: generatedScene.description || activity.description,
+      training_goal: generatedScene.training_goal || activity.training_goal,
+      average_minutes: generatedScene.average_minutes || activity.average_minutes,
+      opening_line: generatedScene.opening_line || activity.opening_line,
+      entry_description: generatedScene.entry_description || activity.entry_description,
+      persona: { ...emptyPersona, ...(generatedScene.persona || {}) },
+    });
+    setGeneratedScene(null);
+    show('已应用生成配置', 'success');
+  }
+
   return (
     <div className="form-grid">
+      <div className="ai-generate-panel">
+        <div>
+          <b><Sparkles size={17} /> 一句话生成场景和人设</b>
+          <p>输入训练需求，先生成草稿预览，确认后再应用到表单。</p>
+        </div>
+        <textarea value={scenePrompt} onChange={(event) => setScenePrompt(event.target.value)} placeholder="例如：生成一个小微企业主咨询经营贷、担心审批和综合费用的首次接待场景" />
+        <button className="primary compact" onClick={generateScene} disabled={generating || !scenePrompt.trim()}><Sparkles size={16} /> {generating ? '生成中...' : '生成配置'}</button>
+      </div>
+      {generatedScene && (
+        <div className="scene-preview">
+          <div className="scene-preview-head">
+            <b>生成草稿预览</b>
+            <button className="primary compact" onClick={applyGeneratedScene}><Check size={16} /> 应用到表单</button>
+          </div>
+          <div className="scene-preview-grid">
+            <span>活动标题</span><p>{generatedScene.title || '-'}</p>
+            <span>训练目标</span><p>{generatedScene.training_goal || '-'}</p>
+            <span>开场语</span><p>{generatedScene.opening_line || '-'}</p>
+            <span>客户人设</span><p>{generatedScene.persona?.customer_name || 'AI 客户'} · {generatedScene.persona?.identity || '-'} · {generatedScene.persona?.difficulty || 'medium'}</p>
+            <span>客户背景</span><p>{generatedScene.persona?.background || '-'}</p>
+            <span>常见异议</span><p>{(generatedScene.persona?.objections || []).join('；') || '-'}</p>
+          </div>
+        </div>
+      )}
       <SectionTitle icon={<ClipboardList />} title="活动场景" />
       <Field label="活动标题" value={activity.title} onChange={(value) => update({ title: value })} required />
       <Field label="活动描述" value={activity.description} onChange={(value) => update({ description: value })} textarea />
@@ -530,12 +607,23 @@ function ScriptStep({ activity, setActivity }) {
         {scriptTypes.map(([type, label]) => <button key={type} onClick={() => add(type)}><Plus size={16} /> {label}</button>)}
       </div>
       <div className="config-table">
-        <div className="config-row header"><span>类型</span><span>标题</span><span>内容</span><span>操作</span></div>
+        <div className="config-row script-row header"><span>类型/阶段</span><span>标题/标签</span><span>内容</span><span>召回</span><span>操作</span></div>
         {activity.script_items.map((item, index) => (
-          <div className="config-row" key={index}>
-            <select value={item.item_type} onChange={(event) => update(index, { item_type: event.target.value })}>{scriptTypes.map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select>
-            <input value={item.title} onChange={(event) => update(index, { title: event.target.value })} placeholder="例如：合规说明" />
+          <div className="config-row script-row" key={index}>
+            <div className="stacked-controls">
+              <select value={item.item_type} onChange={(event) => update(index, { item_type: event.target.value })}>{scriptTypes.map(([type, label]) => <option value={type} key={type}>{label}</option>)}</select>
+              <select value={item.stage || 'any'} onChange={(event) => update(index, { stage: event.target.value })}>{scriptStages.map(([stage, label]) => <option value={stage} key={stage}>{label}</option>)}</select>
+            </div>
+            <div className="stacked-controls">
+              <input value={item.title} onChange={(event) => update(index, { title: event.target.value })} placeholder="例如：合规说明" />
+              <input value={joinLines(item.intent_tags || [])} onChange={(event) => update(index, { intent_tags: splitLines(event.target.value) })} placeholder="意图标签，一行一个" />
+              <input value={joinLines(item.risk_tags || [])} onChange={(event) => update(index, { risk_tags: splitLines(event.target.value) })} placeholder="风险标签，一行一个" />
+            </div>
             <textarea value={item.content} onChange={(event) => update(index, { content: event.target.value })} placeholder="输入话术、问题或红线规则" />
+            <div className="stacked-controls">
+              <Field label="优先级" type="number" value={item.priority ?? 50} onChange={(value) => update(index, { priority: value })} />
+              <label className="toggle-field compact-toggle"><input type="checkbox" checked={item.enabled !== false} onChange={(event) => update(index, { enabled: event.target.checked })} /> 启用</label>
+            </div>
             <button className="icon-danger" onClick={() => remove(index)} title="删除"><Trash2 size={16} /></button>
           </div>
         ))}
@@ -667,6 +755,7 @@ function PracticePage() {
   const [session, setSession] = useState(null);
   const [draft, setDraft] = useState('');
   const [streaming, setStreaming] = useState(false);
+  const [hintLoading, setHintLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [recording, setRecording] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -717,6 +806,20 @@ function PracticePage() {
       setSession(await api(`/api/practice/sessions/${session.id}`));
     } finally {
       setStreaming(false);
+    }
+  }
+
+  async function requestHint() {
+    if (!session || streaming || hintLoading || submitted) return;
+    setHintLoading(true);
+    try {
+      const result = await api(`/api/practice/sessions/${session.id}/hints`, { method: 'POST' });
+      setMessages((current) => [...current, result.message]);
+      setSession((current) => current ? { ...current, messages: [...(current.messages || []), result.message] } : current);
+    } catch (error) {
+      show(error.message);
+    } finally {
+      setHintLoading(false);
     }
   }
 
@@ -825,7 +928,7 @@ function PracticePage() {
             {canSubmit && <button className="chat-submit-button" onClick={submitForReview}>提交质检</button>}
           </header>
           <div className="messages">
-            {messages.map((item) => <MessageBubble key={item.id} item={item} onPlay={() => playText(item.content)} />)}
+            {messages.map((item) => <MessageBubble key={item.id} item={item} onPlay={() => playText(item.content)} onUseHint={() => setDraft(item.content)} />)}
             {streaming && messages.some((item) => item.streaming && !item.content) && <div className="typing">AI 客户正在输入...</div>}
             {!session && <div className="empty">点击开始后，AI 客户会先发起对话。</div>}
             <div ref={bottomRef} />
@@ -841,6 +944,14 @@ function PracticePage() {
                 className={`record-button ${recording ? 'recording' : ''}`}
               >
                 {recording ? <Pause size={18} /> : <Mic size={18} />}
+              </button>
+              <button
+                aria-label="AI 提示"
+                title="AI 提示"
+                onClick={requestHint}
+                disabled={!session || streaming || hintLoading || submitted}
+              >
+                <Sparkles size={18} /> {hintLoading ? '生成中' : 'AI 提示'}
               </button>
               <button className="primary compact" onClick={send} disabled={!session || streaming || submitted || !draft.trim()}><Send size={17} /> 发送</button>
             </div>
@@ -894,7 +1005,7 @@ function ReviewQueue() {
   return (
     <AdminShell>
       <div className="page-title">
-        <div><span className="eyebrow">Quality Review</span><h1>质检中心</h1><p>学员提交后由 AI 自动评分并发布，这里用于查看评分结果和异常状态。</p></div>
+        <div><span className="eyebrow">质检中心</span><h1>质检中心</h1><p>学员提交后由 AI 自动评分并发布，这里用于查看评分结果和异常状态。</p></div>
       </div>
       {toast && <Notice message={toast.message} kind={toast.kind} />}
       <div className="table-card">
@@ -903,7 +1014,7 @@ function ReviewQueue() {
           <tbody>
             {reports.map((report) => (
               <tr key={report.id}>
-                <td><b>报告 #{report.id}</b><span>会话 #{report.session_id} · 活动 #{report.activity_id} · 学员 #{report.user_id}</span></td>
+                <td><b>{formatEntityId('R', report.id)}</b><span>会话 {formatEntityId('S', report.session_id)} / 活动 {formatEntityId('A', report.activity_id)} / 学员 {formatEntityId('U', report.user_id)}</span></td>
                 <td><ReportStatus status={report.status} /></td>
                 <td>{formatDateTime(report.submitted_at)}</td>
                 <td className="actions">
@@ -941,7 +1052,7 @@ function ReviewDetail() {
     <AdminShell wide>
       <button className="back-button" onClick={() => navigate('/admin/reviews')}><ArrowLeft size={16} /> 返回质检中心</button>
       <div className="editor-header">
-        <div><span className="eyebrow">Review Detail</span><h1>质检报告 #{report.id}</h1></div>
+        <div><span className="eyebrow">质检详情</span><h1>质检报告 {formatEntityId('R', report.id)}</h1></div>
         <ReportStatus status={report.status} />
       </div>
       {toast && <Notice message={toast.message} kind={toast.kind} />}
@@ -950,9 +1061,9 @@ function ReviewDetail() {
           <SectionTitle icon={<FileText />} title="自动评分记录" aside="只读" />
           <div className="submitted-meta">
             <span>会话编号</span>
-            <b>#{report.session_id}</b>
+            <b>{formatEntityId('S', report.session_id)}</b>
             <span>学员编号</span>
-            <b>#{report.user_id}</b>
+            <b>{formatEntityId('U', report.user_id)}</b>
             <span>提交时间</span>
             <b>{formatDateTime(report.submitted_at)}</b>
             <span>评分完成</span>
@@ -986,9 +1097,9 @@ function MyReports() {
     <UserShell>
       <div className="page-title reports-hero">
         <div>
-          <span className="eyebrow">Published Reports</span>
+          <span className="eyebrow">已发布报告</span>
           <h1>我的报告</h1>
-          <p>这里只展示已发布的评分结果。总分和关键概览先看列表，细项在单条报告里查看。</p>
+          <p>查看已完成评分的陪练结果，先关注总分、评级和风险提示，再进入单份报告复盘细节。</p>
         </div>
       </div>
       <div className="metric-grid reports-metrics">
@@ -1029,8 +1140,8 @@ function MyReports() {
                 return (
                   <tr key={report.id}>
                     <td>
-                      <b>报告 #{report.id}</b>
-                      <span>会话 #{report.session_id} · 活动 #{report.activity_id}</span>
+                      <b>{formatEntityId('R', report.id)}</b>
+                      <span>会话 {formatEntityId('S', report.session_id)} / 活动 {formatEntityId('A', report.activity_id)}</span>
                     </td>
                     <td>
                       <div className="score-cell">
@@ -1100,23 +1211,11 @@ function MyReportDetail() {
   const dimensions = Array.isArray(payload.dimension_scores) ? payload.dimension_scores : [];
   const risks = Array.isArray(payload.compliance_risks) ? payload.compliance_risks : [];
   const suggestions = (payload.improvement_suggestions || payload.issues || []).filter(Boolean);
-  const scoreTone = getScoreTone(payload.total_score);
 
   return (
     <UserShell>
       <button className="back-button" onClick={() => navigate('/reports')}><ArrowLeft size={16} /> 返回报告列表</button>
-      <div className="editor-header report-detail-header">
-        <div>
-          <span className="eyebrow">Published Report</span>
-          <h1>报告 #{report.id}</h1>
-          <p>会话 #{report.session_id} · 活动 #{report.activity_id} · 发布于 {formatDateTime(report.published_at || report.updated_at)}</p>
-        </div>
-        <div className="report-score-summary">
-          <span className={`score-pill ${scoreTone.className}`}>{scoreTone.label}</span>
-          <strong>{payload.total_score ?? '-'}</strong>
-          <small>综合评分</small>
-        </div>
-      </div>
+      <ReportHeader report={report} payload={payload} />
       {toast && <Notice message={toast.message} kind={toast.kind} />}
       <div className="report-summary-grid">
         <div className="metric-card">
@@ -1136,103 +1235,32 @@ function MyReportDetail() {
           <b>{report.ai_generated_at ? formatDate(report.ai_generated_at) : '-'}</b>
         </div>
       </div>
-      {report.reviewer_notes && <div className="advice-panel"><b>报告备注</b><p>{report.reviewer_notes}</p></div>}
+      {report.reviewer_notes && <InsightList title="报告备注" items={[report.reviewer_notes]} emptyText="暂无报告备注。" />}
       <div className="detail-sections">
-        <section className="table-card detail-section">
+        <section className="table-card detail-section report-reading-section">
           <div className="report-list-header">
             <div>
               <h2>评估维度</h2>
               <p>每个维度保留权重、得分、证据和建议，便于快速定位问题。</p>
             </div>
           </div>
-          <div className="table-wrap">
-            <table className="detail-table">
-              <thead>
-                <tr>
-                  <th>维度</th>
-                  <th>权重</th>
-                  <th>得分</th>
-                  <th>评分依据</th>
-                  <th>改进建议</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dimensions.map((item) => {
-                  const dimensionTone = getScoreTone(item.score);
-                  return (
-                    <tr key={item.dimension_id || item.name}>
-                      <td>
-                        <b>{item.name || '未命名维度'}</b>
-                        <span>{dimensionTone.label}</span>
-                      </td>
-                      <td>{item.weight ?? '-'}</td>
-                      <td>
-                        <span className={`score-pill ${dimensionTone.className}`}>{item.score ?? '-'}</span>
-                      </td>
-                      <td>{item.evidence || '-'}</td>
-                      <td>{item.suggestion || '-'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {!dimensions.length && <div className="empty small">暂无维度明细。</div>}
+          <DimensionScoreList dimensions={dimensions} />
         </section>
-        <section className="table-card detail-section">
-          <div className="report-list-header">
-            <div>
-              <h2>合规风险</h2>
-              <p>展示触发的风险点与对应规则。</p>
-            </div>
-          </div>
-          <div className="table-wrap">
-            <table className="detail-table">
-              <thead>
-                <tr>
-                  <th>风险点</th>
-                  <th>规则说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                {risks.map((risk, index) => (
-                  <tr key={`${risk.phrase || 'risk'}-${index}`}>
-                    <td>{risk.phrase || '-'}</td>
-                    <td>{risk.rule || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {!risks.length && <div className="empty small">暂无合规风险。</div>}
-        </section>
-        <section className="table-card detail-section wide-detail">
-          <div className="report-list-header">
-            <div>
-              <h2>改进建议</h2>
-              <p>用于后续复盘和下一次练习优化。</p>
-            </div>
-          </div>
-          <div className="table-wrap">
-            <table className="detail-table">
-              <thead>
-                <tr>
-                  <th>序号</th>
-                  <th>建议内容</th>
-                </tr>
-              </thead>
-              <tbody>
-                {suggestions.map((item, index) => (
-                  <tr key={`${item}-${index}`}>
-                    <td>{index + 1}</td>
-                    <td>{item}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {!suggestions.length && <div className="empty small">暂无改进建议。</div>}
-        </section>
+        <InsightList
+          title="合规风险"
+          description="展示触发的风险点与对应规则。"
+          items={risks}
+          emptyText="暂无合规风险。"
+          getTitle={(risk) => risk.phrase || '风险提示'}
+          getBody={(risk) => risk.rule || '暂无规则说明'}
+        />
+        <InsightList
+          title="改进建议"
+          description="用于后续复盘和下一次练习优化。"
+          items={suggestions}
+          emptyText="暂无改进建议。"
+          wide
+        />
       </div>
     </UserShell>
   );
@@ -1246,7 +1274,7 @@ function AnalyticsPage() {
   return (
     <AdminShell wide>
       <div className="page-title">
-        <div><span className="eyebrow">Analytics</span><h1>数据看板</h1><p>跟踪活动参与、质检积压、评分表现和合规风险。</p></div>
+        <div><span className="eyebrow">运营数据</span><h1>数据看板</h1><p>跟踪活动参与、质检积压、评分表现和合规风险。</p></div>
       </div>
       {toast && <Notice message={toast.message} kind={toast.kind} />}
       <div className="metric-grid">
@@ -1273,7 +1301,7 @@ function AnalyticsPage() {
         <section className="dashboard-panel wide-panel">
           <h2>最近会话</h2>
           <div className="mini-list">
-            {data.recent_sessions.map((item) => <span key={item.id}>会话 #{item.id} · 活动 {item.activity_id} · {item.status} · {formatDateTime(item.updated_at)}</span>)}
+            {data.recent_sessions.map((item) => <span key={item.id}>会话 {formatEntityId('S', item.id)} / 活动 {formatEntityId('A', item.activity_id)} / {item.status} / {formatDateTime(item.updated_at)}</span>)}
           </div>
         </section>
       </div>
@@ -1289,15 +1317,17 @@ function UserShell({ children }) {
   return <div className="user-shell"><TopNav userSide /><main className="page-container">{children}</main></div>;
 }
 
-function MessageBubble({ item, onPlay }) {
+function MessageBubble({ item, onPlay, onUseHint }) {
   const isUser = item.role === 'trainee';
+  const isHint = item.role === 'ai_hint';
   return (
-    <div className={`message ${isUser ? 'trainee' : 'ai_customer'}`}>
-      <div className="avatar">{isUser ? <UserRound size={16} /> : <Bot size={16} />}</div>
+    <div className={`message ${isUser ? 'trainee' : isHint ? 'ai_hint' : 'ai_customer'}`}>
+      <div className="avatar">{isUser ? <UserRound size={16} /> : isHint ? <Sparkles size={16} /> : <Bot size={16} />}</div>
       <div>
-        <span>{isUser ? '我' : 'AI 客户'}</span>
+        <span>{isUser ? '我' : isHint ? 'AI 提示（仅自己可见）' : 'AI 客户'}</span>
         <p>{item.content || (item.streaming ? '...' : '')}</p>
-        {!isUser && item.content && <button className="listen-button" onClick={onPlay}><Volume2 size={14} /> 重播</button>}
+        {isHint && item.content && <button className="listen-button" onClick={onUseHint}><FileText size={14} /> 填入输入框</button>}
+        {!isUser && !isHint && item.content && <button className="listen-button" onClick={onPlay}><Volume2 size={14} /> 重播</button>}
       </div>
     </div>
   );
@@ -1338,6 +1368,97 @@ function parseSse(chunk) {
   const dataLine = chunk.split('\n').find((line) => line.startsWith('data:'));
   if (!eventLine || !dataLine) return null;
   return { event: eventLine.replace('event:', '').trim(), data: JSON.parse(dataLine.replace('data:', '').trim()) };
+}
+
+function ReportHeader({ report, payload }) {
+  const scoreTone = getScoreTone(payload.total_score);
+  return (
+    <section className="report-page-header">
+      <div className="report-title-block">
+        <span className="eyebrow">已发布报告</span>
+        <h1>陪练评分报告</h1>
+        <ReportMeta report={report} />
+      </div>
+      <div className="report-score-panel">
+        <span className={`score-pill ${scoreTone.className}`}>{scoreTone.label}</span>
+        <strong>{payload.total_score ?? '-'}</strong>
+        <small>综合评分</small>
+      </div>
+    </section>
+  );
+}
+
+function ReportMeta({ report }) {
+  const publishedAt = report.published_at || report.updated_at;
+  return (
+    <div className="report-meta">
+      <span><b>报告编号</b>{formatEntityId('R', report.id)}</span>
+      <span><b>会话编号</b>{formatEntityId('S', report.session_id)}</span>
+      <span><b>活动编号</b>{formatEntityId('A', report.activity_id)}</span>
+      <span><b>发布时间</b>{formatDateTime(publishedAt)}</span>
+    </div>
+  );
+}
+
+function DimensionScoreList({ dimensions }) {
+  if (!dimensions.length) return <div className="empty small">暂无维度明细。</div>;
+  return (
+    <div className="dimension-score-list">
+      {dimensions.map((item) => {
+        const dimensionTone = getScoreTone(item.score);
+        return (
+          <article className="dimension-score-item" key={item.dimension_id || item.name}>
+            <div className="dimension-score-head">
+              <div>
+                <h3>{item.name || '未命名维度'}</h3>
+                <span>权重 {item.weight ?? '-'}%</span>
+              </div>
+              <span className={`score-pill ${dimensionTone.className}`}>{item.score ?? '-'} 分 · {dimensionTone.label}</span>
+            </div>
+            <div className="dimension-meter" aria-hidden="true">
+              <i style={{ width: `${scorePercent(item.score)}%` }} />
+            </div>
+            <div className="dimension-copy-grid">
+              <div>
+                <b>评分依据</b>
+                <p>{item.evidence || '暂无评分依据。'}</p>
+              </div>
+              <div>
+                <b>改进建议</b>
+                <p>{item.suggestion || '暂无改进建议。'}</p>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function InsightList({ title, description, items = [], emptyText, getTitle, getBody, wide = false }) {
+  return (
+    <section className={`table-card detail-section insight-section ${wide ? 'wide-detail' : ''}`}>
+      <div className="report-list-header">
+        <div>
+          <h2>{title}</h2>
+          {description && <p>{description}</p>}
+        </div>
+      </div>
+      {items.length ? (
+        <div className="insight-list">
+          {items.map((item, index) => (
+            <article className="insight-item" key={`${title}-${index}`}>
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <div>
+                <b>{getTitle ? getTitle(item, index) : item}</b>
+                {getBody && <p>{getBody(item, index)}</p>}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : <div className="empty small">{emptyText}</div>}
+    </section>
+  );
 }
 
 function ReportCard({ report = {}, title = '评分预览', status }) {
@@ -1473,6 +1594,17 @@ function summarizeDimensions(dimensions = []) {
 
 function roundOne(value) {
   return Math.round(value * 10) / 10;
+}
+
+function formatEntityId(prefix, id) {
+  if (id === null || id === undefined || id === '') return '-';
+  return `${prefix}-${String(id).padStart(4, '0')}`;
+}
+
+function scorePercent(score) {
+  const value = Number(score);
+  if (Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(100, value));
 }
 
 function formatDate(value) {

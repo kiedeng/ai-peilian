@@ -57,8 +57,8 @@ def test_admin_can_create_and_publish_activity():
             "difficulty": "medium",
         },
         "script_items": [
-            {"item_type": "standard", "title": "合规说明", "content": "审批结果以机构审核为准。", "sort_order": 0},
-            {"item_type": "forbidden", "title": "禁用", "content": "保证通过", "sort_order": 1},
+            {"item_type": "standard", "stage": "needs", "intent_tags": ["用途"], "risk_tags": [], "priority": 70, "enabled": True, "title": "合规说明", "content": "审批结果以机构审核为准。", "sort_order": 0},
+            {"item_type": "forbidden", "stage": "compliance", "intent_tags": [], "risk_tags": ["approval_promise"], "priority": 90, "enabled": True, "title": "禁用", "content": "保证通过", "sort_order": 1},
         ],
         "dimensions": [
             {"name": "合规表达", "weight": 60, "scoring_criteria": "不能承诺结果", "deduction_rules": ["承诺通过"], "improvement_advice": "使用审慎表达", "risk_triggers": ["保证通过"], "sort_order": 0},
@@ -67,7 +67,11 @@ def test_admin_can_create_and_publish_activity():
     }
     create_response = client.post("/api/admin/activities", json=payload, headers=headers)
     assert create_response.status_code == 200
-    activity_id = create_response.json()["id"]
+    created_payload = create_response.json()
+    activity_id = created_payload["id"]
+    assert created_payload["script_items"][0]["stage"] == "needs"
+    assert created_payload["script_items"][0]["intent_tags"] == ["用途"]
+    assert created_payload["script_items"][1]["risk_tags"] == ["approval_promise"]
 
     publish_response = client.post(f"/api/admin/activities/{activity_id}/publish", headers=headers)
     assert publish_response.status_code == 200
@@ -118,6 +122,45 @@ def test_model_missing_returns_clear_error_for_practice_message():
         ai_service.settings.openai_api_key = original_key
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.json()["detail"]
+
+
+def test_customer_turn_metadata_and_state_are_saved(monkeypatch):
+    async def fake_customer_turn(activity, messages):
+        return {
+            "customer_reply": "那你能保证批下来吗？",
+            "detected_intent": "追问审批确定性",
+            "emotion": "焦虑",
+            "stage_signal": "objection",
+            "risk_probe": "approval_promise",
+            "state": {
+                "stage": "objection",
+                "stage_label": "异议处理",
+                "turns": len(messages),
+                "risk_hits": [],
+                "matched_objections": [],
+                "hint_count": 0,
+            },
+        }
+
+    monkeypatch.setattr(ai_service, "customer_turn", fake_customer_turn)
+
+    student_token = login("student", "student123")
+    headers = {"Authorization": f"Bearer {student_token}"}
+    activities = client.get("/api/public/activities", headers=headers).json()
+    session = client.post("/api/practice/sessions", json={"activity_id": activities[0]["id"]}, headers=headers).json()
+    response = client.post(
+        f"/api/practice/sessions/{session['id']}/messages",
+        json={"content": "您好，我先了解您的资金用途。", "input_mode": "text"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state_json"]["stage"] == "objection"
+    ai_message = payload["messages"][-1]
+    assert ai_message["role"] == "ai_customer"
+    assert ai_message["metadata_json"]["detected_intent"] == "追问审批确定性"
+    assert ai_message["metadata_json"]["risk_probe"] == "approval_promise"
 
 
 def test_activity_background_fields_roundtrip():
@@ -199,6 +242,94 @@ def test_stream_message_missing_model_emits_error_event_and_session_refreshes():
     refreshed = client.get(f"/api/practice/sessions/{session['id']}", headers=headers)
     assert refreshed.status_code == 200
     assert len(refreshed.json()["messages"]) >= 3
+
+
+def test_student_can_request_private_ai_hint(monkeypatch):
+    async def fake_generate_hint(activity, messages):
+        return "我先了解一下您的资金用途和还款安排，具体额度和审批结果需要以机构审核为准。"
+
+    monkeypatch.setattr(ai_service, "generate_hint", fake_generate_hint)
+
+    student_token = login("student", "student123")
+    headers = {"Authorization": f"Bearer {student_token}"}
+    activities = client.get("/api/public/activities", headers=headers).json()
+    session = client.post("/api/practice/sessions", json={"activity_id": activities[0]["id"]}, headers=headers).json()
+
+    response = client.post(f"/api/practice/sessions/{session['id']}/hints", headers=headers)
+    assert response.status_code == 200
+    message = response.json()["message"]
+    assert message["role"] == "ai_hint"
+    assert message["metadata_json"]["kind"] == "ai_hint"
+    assert "机构审核为准" in message["content"]
+
+    refreshed = client.get(f"/api/practice/sessions/{session['id']}", headers=headers)
+    assert any(item["role"] == "ai_hint" for item in refreshed.json()["messages"])
+
+
+def test_private_ai_hint_rejects_completed_session(monkeypatch):
+    async def fake_evaluate(activity, messages):
+        return {
+            "total_score": 80,
+            "dimension_scores": [],
+            "strengths": [],
+            "issues": [],
+            "compliance_risks": [],
+            "improvement_suggestions": [],
+        }
+
+    async def fake_generate_hint(activity, messages):
+        return "提示"
+
+    monkeypatch.setattr(ai_service, "evaluate", fake_evaluate)
+    monkeypatch.setattr(ai_service, "generate_hint", fake_generate_hint)
+
+    student_token = login("student", "student123")
+    headers = {"Authorization": f"Bearer {student_token}"}
+    activities = client.get("/api/public/activities", headers=headers).json()
+    session = client.post("/api/practice/sessions", json={"activity_id": activities[0]["id"]}, headers=headers).json()
+    client.post(f"/api/practice/sessions/{session['id']}/submit", headers=headers)
+
+    response = client.post(f"/api/practice/sessions/{session['id']}/hints", headers=headers)
+    assert response.status_code == 400
+    assert "已结束" in response.json()["detail"]
+
+
+def test_admin_can_generate_scene_preview(monkeypatch):
+    async def fake_generate_scene(prompt):
+        assert "经营贷" in prompt
+        return {
+            "title": "经营贷首次咨询",
+            "description": "训练首次接待",
+            "training_goal": "合规了解客户需求",
+            "average_minutes": 12,
+            "opening_line": "你好，我想咨询经营贷。",
+            "entry_description": "适合新员工练习。",
+            "persona": {
+                "customer_name": "周敏",
+                "gender": "女",
+                "age": 34,
+                "identity": "小微企业主",
+                "background": "经营服装店，需要补货周转。",
+                "target": "申请 20 万经营贷",
+                "personality": "谨慎、关注费用",
+                "objections": ["能保证通过吗？"],
+                "risk_preference": "低风险",
+                "difficulty": "medium",
+            },
+        }
+
+    monkeypatch.setattr(ai_service, "generate_scene", fake_generate_scene)
+
+    admin_headers = {"Authorization": f"Bearer {login()}"}
+    response = client.post("/api/admin/activities/generate-scene", json={"prompt": "经营贷首次咨询"}, headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "经营贷首次咨询"
+    assert payload["persona"]["customer_name"] == "周敏"
+
+    student_headers = {"Authorization": f"Bearer {login('student', 'student123')}"}
+    forbidden = client.post("/api/admin/activities/generate-scene", json={"prompt": "经营贷"}, headers=student_headers)
+    assert forbidden.status_code == 403
 
 
 def test_oauth_provider_placeholder_is_available():
