@@ -11,6 +11,8 @@ from backend.app.config import get_settings
 from backend.app.models import PracticeMessage, TrainingActivity
 
 
+LEGACY_OPENAI_TTS_VOICES = {"alloy", "echo", "nova", "shimmer"}
+
 STAGE_KEYWORDS = [
     ("opening", ["你好", "您好", "咨询", "了解", "介绍"]),
     ("needs", ["用途", "资金", "金额", "期限", "流水", "负债", "还款", "经营"]),
@@ -233,6 +235,10 @@ AI 提示使用记录：共 {len(hints)} 次。提示内容如下：
 
     async def synthesize(self, text: str, voice: str = "", speed: float = 1.0) -> str:
         self._ensure_configured()
+        configured_voice = self.settings.openai_tts_voice
+        request_voice = voice or configured_voice
+        if request_voice in LEGACY_OPENAI_TTS_VOICES and configured_voice not in LEGACY_OPENAI_TTS_VOICES:
+            request_voice = configured_voice
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.post(
@@ -240,7 +246,7 @@ AI 提示使用记录：共 {len(hints)} 次。提示内容如下：
                     headers={"Authorization": f"Bearer {self.settings.openai_api_key}", "Content-Type": "application/json"},
                     json={
                         "model": self.settings.openai_tts_model,
-                        "voice": voice or self.settings.openai_tts_voice,
+                        "voice": request_voice,
                         "input": text,
                         "speed": speed,
                     },

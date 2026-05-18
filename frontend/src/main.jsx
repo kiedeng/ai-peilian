@@ -33,6 +33,10 @@ import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8010';
 const TOKEN_KEY = 'ai-peilian-token';
+const DEFAULT_TTS_VOICE = '杜小雯';
+const DEFAULT_VOICE_SETTINGS = { voice: DEFAULT_TTS_VOICE, speed: 1, auto_play: true, default_input_mode: 'voice', continuous_voice: true };
+const VAD_CONFIG = { threshold: 0.035, startMs: 260, silenceMs: 1500, minSpeechMs: 650, maxDurationMs: 24000 };
+const LEGACY_OPENAI_VOICES = new Set(['alloy', 'echo', 'nova', 'shimmer']);
 
 const backgroundPresets = [
   ['aurora', '晨光蓝', 'linear-gradient(135deg, #eef6ff 0%, #f8fbff 45%, #e8fff7 100%)'],
@@ -95,7 +99,7 @@ function emptyActivity() {
     chat_background_type: 'preset',
     chat_background_value: 'aurora',
     chat_background_overlay: 0.42,
-    voice_settings: { voice: 'alloy', speed: 1, auto_play: true },
+    voice_settings: { ...DEFAULT_VOICE_SETTINGS },
     status: 'draft',
     starts_at: toDatetimeLocal(now),
     ends_at: toDatetimeLocal(nextMonth),
@@ -131,7 +135,7 @@ function fromApiActivity(activity) {
     chat_background_type: activity.chat_background_type || 'preset',
     chat_background_value: activity.chat_background_value || 'aurora',
     chat_background_overlay: activity.chat_background_overlay ?? 0.42,
-    voice_settings: { voice: 'alloy', speed: 1, auto_play: true, ...(activity.voice_settings || {}) },
+    voice_settings: normalizeVoiceSettings(activity.voice_settings),
     starts_at: activity.starts_at ? toDatetimeLocal(new Date(activity.starts_at)) : '',
     ends_at: activity.ends_at ? toDatetimeLocal(new Date(activity.ends_at)) : '',
     persona: activity.persona || { ...emptyPersona },
@@ -146,6 +150,18 @@ function fromApiActivity(activity) {
     })),
     dimensions: activity.dimensions || [],
   };
+}
+
+function normalizeVoiceSettings(settings = {}) {
+  const voiceSettings = { ...DEFAULT_VOICE_SETTINGS, ...settings };
+  if (LEGACY_OPENAI_VOICES.has(voiceSettings.voice)) voiceSettings.voice = DEFAULT_TTS_VOICE;
+  if (!['text', 'voice'].includes(voiceSettings.default_input_mode)) voiceSettings.default_input_mode = 'voice';
+  voiceSettings.continuous_voice = voiceSettings.continuous_voice !== false;
+  return voiceSettings;
+}
+
+function normalizeActivity(activity) {
+  return { ...activity, voice_settings: normalizeVoiceSettings(activity.voice_settings) };
 }
 
 function toApiActivity(activity, status = activity.status) {
@@ -210,21 +226,66 @@ function writeAscii(view, offset, text) {
   }
 }
 
-async function createWavRecorder(stream) {
+async function createWavRecorder(stream, options = {}) {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) throw new Error('当前浏览器不支持录音编码，请使用文字输入。');
   const audioContext = new AudioContextClass();
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
   const chunks = [];
+  const preSpeechChunks = [];
+  const threshold = options.threshold ?? VAD_CONFIG.threshold;
+  const startMs = options.startMs ?? VAD_CONFIG.startMs;
+  const silenceMs = options.silenceMs ?? VAD_CONFIG.silenceMs;
+  const minSpeechMs = options.minSpeechMs ?? VAD_CONFIG.minSpeechMs;
+  const maxDurationMs = options.maxDurationMs ?? VAD_CONFIG.maxDurationMs;
+  let speechStarted = false;
+  let potentialSpeechAt = 0;
+  let lastSpeechAt = Date.now();
+  let speechStartedAt = 0;
+  let stopping = false;
   processor.onaudioprocess = (event) => {
-    chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+    const channel = event.inputBuffer.getChannelData(0);
+    const frame = new Float32Array(channel);
+    if (!options.vad) {
+      chunks.push(frame);
+      return;
+    }
+    let sum = 0;
+    for (let index = 0; index < channel.length; index += 1) sum += channel[index] * channel[index];
+    const level = Math.sqrt(sum / channel.length);
+    options.onLevel?.(level);
+    const now = Date.now();
+    if (level >= threshold) {
+      lastSpeechAt = now;
+      if (!potentialSpeechAt) potentialSpeechAt = now;
+      if (!speechStarted && now - potentialSpeechAt >= startMs) {
+        speechStarted = true;
+        speechStartedAt = potentialSpeechAt;
+        chunks.push(...preSpeechChunks);
+        preSpeechChunks.length = 0;
+        options.onSpeechStart?.();
+      }
+    } else if (!speechStarted) {
+      potentialSpeechAt = 0;
+    }
+    if (speechStarted) {
+      chunks.push(frame);
+    } else {
+      preSpeechChunks.push(frame);
+      if (preSpeechChunks.length > 8) preSpeechChunks.shift();
+    }
+    if (speechStarted && !stopping && ((now - lastSpeechAt >= silenceMs && now - speechStartedAt >= minSpeechMs) || now - speechStartedAt >= maxDurationMs)) {
+      stopping = true;
+      options.onSilenceEnd?.();
+    }
   };
   source.connect(processor);
   processor.connect(audioContext.destination);
 
   return {
     async stop() {
+      stopping = true;
       processor.disconnect();
       source.disconnect();
       stream.getTracks().forEach((track) => track.stop());
@@ -253,6 +314,10 @@ function assetUrl(value) {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
   return `${API_BASE}${value}`;
+}
+
+function isLocalHost(hostname) {
+  return ['localhost', '127.0.0.1', '::1'].includes(hostname);
 }
 
 function backgroundStyle(activity) {
@@ -774,9 +839,11 @@ function PublishStep({ activity, setActivity, totalWeight, show }) {
         <Field label="结束时间" type="datetime-local" value={activity.ends_at} onChange={(value) => setActivity({ ...activity, ends_at: value })} />
         <label className="field"><span>发布状态</span><select value={activity.status} onChange={(event) => setActivity({ ...activity, status: event.target.value })}><option value="draft">草稿</option><option value="published">已发布</option><option value="offline">已下线</option></select></label>
         <SectionTitle icon={<Headphones />} title="语音体验" />
-        <label className="field"><span>AI 音色</span><select value={voice.voice || 'alloy'} onChange={(event) => updateVoice({ voice: event.target.value })}><option value="alloy">Alloy</option><option value="echo">Echo</option><option value="nova">Nova</option><option value="shimmer">Shimmer</option></select></label>
+        <label className="field"><span>AI 音色</span><select value={voice.voice || DEFAULT_TTS_VOICE} onChange={(event) => updateVoice({ voice: event.target.value })}><option value="杜小雯">杜小雯</option></select></label>
         <Field label="语速" type="number" value={voice.speed || 1} onChange={(value) => updateVoice({ speed: Number(value || 1) })} />
         <label className="field toggle-field"><span>自动播放 AI 回复</span><input type="checkbox" checked={voice.auto_play !== false} onChange={(event) => updateVoice({ auto_play: event.target.checked })} /></label>
+        <label className="field"><span>默认输入方式</span><select value={voice.default_input_mode || 'voice'} onChange={(event) => updateVoice({ default_input_mode: event.target.value })}><option value="voice">语音输入</option><option value="text">文字输入</option></select></label>
+        <label className="field toggle-field"><span>连续语音对话</span><input type="checkbox" checked={voice.continuous_voice !== false} onChange={(event) => updateVoice({ continuous_voice: event.target.checked })} /></label>
         <SectionTitle icon={<ImagePlus />} title="对话背景" />
         <label className="field"><span>背景类型</span><select value={activity.chat_background_type} onChange={(event) => setActivity({ ...activity, chat_background_type: event.target.value })}><option value="preset">预设背景</option><option value="upload">上传图片</option><option value="url">图片 URL</option></select></label>
         {activity.chat_background_type === 'preset' && <label className="field"><span>预设背景</span><select value={activity.chat_background_value} onChange={(event) => setActivity({ ...activity, chat_background_value: event.target.value })}>{backgroundPresets.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>}
@@ -840,12 +907,42 @@ function PracticePage() {
   const [messages, setMessages] = useState([]);
   const [recording, setRecording] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [voicePaused, setVoicePaused] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState('idle');
+  const [voiceLevel, setVoiceLevel] = useState(0);
   const recorderRef = useRef(null);
   const audioRef = useRef(null);
   const messagesRef = useRef(null);
+  const sessionRef = useRef(null);
+  const activityRef = useRef(null);
+  const streamingRef = useRef(false);
+  const submittedRef = useRef(false);
+  const mutedRef = useRef(false);
+  const voicePausedRef = useRef(false);
+  const voiceStatusRef = useRef('idle');
+  const initialVoicePlayedRef = useRef(false);
+  const submitted = session?.assessment_status && session.assessment_status !== 'not_submitted';
+  const canSubmit = Boolean(session && !submitted && !streaming);
 
-  useEffect(() => { api(`/api/public/activities/${id}`).then(setActivity).catch((error) => show(error.message)); }, [id]);
+  useEffect(() => { api(`/api/public/activities/${id}`).then((data) => setActivity(normalizeActivity(data))).catch((error) => show(error.message)); }, [id]);
   useEffect(() => { setMessages(session?.messages || []); }, [session]);
+  useEffect(() => { activityRef.current = activity; }, [activity]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { streamingRef.current = streaming; }, [streaming]);
+  useEffect(() => { submittedRef.current = Boolean(submitted); }, [submitted]);
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { voicePausedRef.current = voicePaused; }, [voicePaused]);
+  useEffect(() => { voiceStatusRef.current = voiceStatus; }, [voiceStatus]);
+  useEffect(() => {
+    if (session && !voicePaused && !streaming && voiceStatus === 'idle' && isContinuousVoiceEnabled()) startContinuousListeningSoon();
+  }, [session, voicePaused, streaming, voiceStatus]);
+  useEffect(() => () => {
+    stopContinuousListening();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+  }, []);
   useEffect(() => {
     const node = messagesRef.current;
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'auto' });
@@ -895,7 +992,14 @@ function PracticePage() {
   async function start() {
     setStreaming(true);
     try {
-      setSession(await api('/api/practice/sessions', { method: 'POST', body: JSON.stringify({ activity_id: Number(id) }) }));
+      const nextSession = await api('/api/practice/sessions', { method: 'POST', body: JSON.stringify({ activity_id: Number(id) }) });
+      setSession(nextSession);
+      if (isContinuousVoiceEnabled(nextSession)) {
+        const firstReply = [...(nextSession.messages || [])].reverse().find((item) => item.role === 'ai_customer');
+        initialVoicePlayedRef.current = true;
+        if (firstReply && activity?.voice_settings?.auto_play !== false && !mutedRef.current) await playText(firstReply.content);
+        startContinuousListeningSoon();
+      }
     } catch (error) {
       show(error.message);
     } finally {
@@ -903,12 +1007,97 @@ function PracticePage() {
     }
   }
 
-  async function send() {
-    const content = draft.trim();
+  function isContinuousVoiceEnabled(nextSession = sessionRef.current) {
+    const voice = activityRef.current?.voice_settings || {};
+    return Boolean(
+      nextSession
+      && voice.default_input_mode === 'voice'
+      && voice.continuous_voice !== false
+      && !voicePausedRef.current
+      && !submittedRef.current
+    );
+  }
+
+  function startContinuousListeningSoon() {
+    window.setTimeout(() => {
+      startContinuousListening();
+    }, 180);
+  }
+
+  async function stopContinuousListening() {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    setVoiceLevel(0);
+    if (!recorder) return null;
+    try {
+      return await recorder.stop();
+    } catch {
+      return null;
+    }
+  }
+
+  async function startContinuousListening() {
+    if (!isContinuousVoiceEnabled() || streamingRef.current || voiceStatusRef.current !== 'idle' || recorderRef.current) return;
+    if (!window.isSecureContext && !isLocalHost(window.location.hostname)) {
+      setVoicePaused(true);
+      show('手机录音需要 HTTPS 安全访问，请用 HTTPS 地址打开。');
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoicePaused(true);
+      show('当前浏览器不支持录音，请使用 Chrome、Edge 或 Safari。');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setVoiceStatus('listening');
+      recorderRef.current = await createWavRecorder(stream, {
+        vad: true,
+        onLevel: (level) => setVoiceLevel(Math.min(1, level / 0.08)),
+        onSpeechStart: () => setVoiceStatus('speaking'),
+        onSilenceEnd: () => finishContinuousVoice(),
+      });
+    } catch {
+      setVoicePaused(true);
+      setVoiceStatus('idle');
+      show('无法访问麦克风，请检查浏览器授权。');
+    }
+  }
+
+  async function finishContinuousVoice() {
+    if (!recorderRef.current || streamingRef.current) return;
+    setVoiceStatus('transcribing');
+    const blob = await stopContinuousListening();
+    if (!blob || !blob.size || !isContinuousVoiceEnabled()) {
+      setVoiceStatus('idle');
+      return;
+    }
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'voice.wav');
+      const result = await api('/api/speech/transcribe', { method: 'POST', body: form });
+      const text = String(result.text || '').trim();
+      if (!text) {
+        setVoiceStatus('idle');
+        startContinuousListeningSoon();
+        return;
+      }
+      await send(text, 'voice');
+    } catch (error) {
+      setVoiceStatus('idle');
+      show(error.message);
+      startContinuousListeningSoon();
+    }
+  }
+
+  async function send(inputContent = draft, inputMode = 'text') {
+    const content = String(inputContent || '').trim();
     if (!content || !session || streaming) return;
-    setDraft('');
+    if (inputMode === 'text') setDraft('');
+    await stopContinuousListening();
     setStreaming(true);
-    const tempUser = { id: `local-${Date.now()}`, role: 'trainee', content, input_mode: 'text', created_at: new Date().toISOString() };
+    setVoiceStatus(inputMode === 'voice' ? 'streaming' : 'idle');
+    const tempUser = { id: `local-${Date.now()}`, role: 'trainee', content, input_mode: inputMode, created_at: new Date().toISOString() };
     const tempAi = { id: `stream-${Date.now()}`, role: 'ai_customer', content: '', input_mode: 'system', created_at: new Date().toISOString(), streaming: true };
     setMessages((current) => [...current, tempUser, tempAi]);
     try {
@@ -918,18 +1107,20 @@ function PracticePage() {
         onDone: async (nextSession) => {
           setSession(nextSession);
           const lastReply = [...(nextSession.messages || [])].reverse().find((item) => item.role === 'ai_customer');
-          if (lastReply && activity?.voice_settings?.auto_play !== false && !muted) await playText(lastReply.content);
+          if (lastReply && activity?.voice_settings?.auto_play !== false && !mutedRef.current) await playText(lastReply.content);
+          startContinuousListeningSoon();
         },
         onError: async (detail) => {
           show(detail);
           setSession(await api(`/api/practice/sessions/${session.id}`));
         },
-      });
+      }, inputMode);
     } catch (error) {
       show(error.message);
       setSession(await api(`/api/practice/sessions/${session.id}`));
     } finally {
       setStreaming(false);
+      setVoiceStatus('idle');
     }
   }
 
@@ -949,6 +1140,7 @@ function PracticePage() {
 
   async function submitForReview() {
     if (!session) return;
+    await stopContinuousListening();
     setStreaming(true);
     try {
       const result = await api(`/api/practice/sessions/${session.id}/submit`, { method: 'POST' });
@@ -968,6 +1160,7 @@ function PracticePage() {
   }
 
   async function toggleRecord() {
+    setVoicePaused(true);
     if (recording) {
       setRecording(false);
       try {
@@ -984,11 +1177,16 @@ function PracticePage() {
       }
       return;
     }
+    if (!window.isSecureContext && !isLocalHost(window.location.hostname)) {
+      show('手机录音需要 HTTPS 安全访问，请用 HTTPS 地址打开。');
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
-      show('当前浏览器不支持录音，请使用文字输入。');
+      show('当前浏览器不支持录音，请使用 Chrome、Edge 或 Safari。');
       return;
     }
     try {
+      await stopContinuousListening();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recorderRef.current = await createWavRecorder(stream);
       setRecording(true);
@@ -1000,13 +1198,22 @@ function PracticePage() {
   async function playText(text) {
     if (!text || muted) return;
     try {
+      if (audioRef.current) audioRef.current.pause();
+      setVoiceStatus('playing');
       const voice = activity?.voice_settings || {};
-      const result = await api('/api/speech/synthesize', { method: 'POST', body: JSON.stringify({ text, voice: voice.voice || 'alloy', speed: Number(voice.speed || 1) }) });
+      const result = await api('/api/speech/synthesize', { method: 'POST', body: JSON.stringify({ text, voice: voice.voice || DEFAULT_TTS_VOICE, speed: Number(voice.speed || 1) }) });
       const audio = new Audio(`data:${result.mime_type};base64,${result.audio_base64}`);
       audioRef.current = audio;
-      await audio.play();
+      await new Promise((resolve, reject) => {
+        audio.onended = resolve;
+        audio.onerror = reject;
+        audio.play().catch(reject);
+      });
     } catch (error) {
       show(error.message);
+    } finally {
+      audioRef.current = null;
+      setVoiceStatus('idle');
     }
   }
 
@@ -1017,8 +1224,16 @@ function PracticePage() {
   }
 
   if (!activity) return <div className="page-loading">正在加载活动...</div>;
-  const submitted = session?.assessment_status && session.assessment_status !== 'not_submitted';
-  const canSubmit = Boolean(session && !submitted && !streaming);
+  const voiceSettings = activity.voice_settings || {};
+  const continuousVoiceConfigured = voiceSettings.default_input_mode === 'voice' && voiceSettings.continuous_voice !== false;
+  const voiceStatusText = {
+    idle: voicePaused ? '语音已暂停' : '准备监听',
+    listening: '正在监听',
+    speaking: '正在收音',
+    transcribing: '正在转写',
+    streaming: 'AI 正在回复',
+    playing: '正在播放 AI 回复',
+  }[voiceStatus] || '准备监听';
   return (
     <div className={`practice-page ${session ? 'practice-chat-page' : ''}`} style={backgroundStyle(activity)}>
       <div className="practice-overlay" style={{ backgroundColor: `rgba(6, 16, 31, ${activity.chat_background_overlay || 0})` }} />
@@ -1034,7 +1249,7 @@ function PracticePage() {
           <div className="voice-panel">
             <b><Volume2 size={16} /> 语音陪练</b>
             <button onClick={() => setMuted(!muted)}>{muted ? <Pause size={16} /> : <Play size={16} />}{muted ? '已静音' : '自动播放'}</button>
-            <span>音色 {activity.voice_settings?.voice || 'alloy'} · 语速 {activity.voice_settings?.speed || 1}</span>
+            <span>音色 {activity.voice_settings?.voice || DEFAULT_TTS_VOICE} · 语速 {activity.voice_settings?.speed || 1}</span>
           </div>
           <button className="primary" onClick={start} disabled={streaming}>开始本次陪练</button>
         </aside> : <section className="chat-workspace">
@@ -1046,6 +1261,19 @@ function PracticePage() {
             </div>
             {canSubmit && <button className="chat-submit-button" onClick={submitForReview}>提交质检</button>}
           </header>
+          {continuousVoiceConfigured && <div className="voice-status-bar">
+            <div><Mic size={16} /><span>{voiceStatusText}</span><i style={{ transform: `scaleX(${Math.max(0.08, voiceLevel)})` }} /></div>
+            <button onClick={() => {
+              const nextPaused = !voicePaused;
+              setVoicePaused(nextPaused);
+              if (nextPaused) {
+                setVoiceStatus('idle');
+                stopContinuousListening();
+              } else {
+                startContinuousListeningSoon();
+              }
+            }}>{voicePaused ? '开启语音' : '结束语音'}</button>
+          </div>}
           <div className="messages" ref={messagesRef}>
             {messages.map((item) => <MessageBubble key={item.id} item={item} onPlay={() => playText(item.content)} onUseHint={() => setDraft(item.content)} />)}
             {streaming && messages.some((item) => item.streaming && !item.content) && <div className="typing">AI 客户正在输入...</div>}
@@ -1451,11 +1679,11 @@ function MessageBubble({ item, onPlay, onUseHint }) {
   );
 }
 
-async function streamSessionMessage(sessionId, content, handlers) {
+async function streamSessionMessage(sessionId, content, handlers, inputMode = 'text') {
   const response = await fetch(`${API_BASE}/api/practice/sessions/${sessionId}/messages/stream`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ content, input_mode: 'text' }),
+    body: JSON.stringify({ content, input_mode: inputMode }),
   });
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => ({}));

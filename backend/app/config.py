@@ -27,7 +27,7 @@ class Settings(BaseModel):
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_stt_model: str = os.getenv("OPENAI_STT_MODEL", "whisper-1")
     openai_tts_model: str = os.getenv("OPENAI_TTS_MODEL", "tts-1")
-    openai_tts_voice: str = os.getenv("OPENAI_TTS_VOICE", "alloy")
+    openai_tts_voice: str = os.getenv("OPENAI_TTS_VOICE", "杜小雯")
 
 
 @lru_cache

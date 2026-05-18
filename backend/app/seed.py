@@ -28,7 +28,7 @@ def seed_initial_data(db: Session) -> None:
             status="published",
             starts_at=now - timedelta(days=1),
             ends_at=now + timedelta(days=30),
-            voice_settings={"voice": "alloy", "speed": 1.0, "auto_play": True},
+            voice_settings={"voice": "杜小雯", "speed": 1.0, "auto_play": True, "default_input_mode": "voice", "continuous_voice": True},
         )
         db.add(activity)
         db.flush()

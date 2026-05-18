@@ -176,6 +176,7 @@ def test_activity_background_fields_roundtrip():
         "chat_background_type": "url",
         "chat_background_value": "https://example.com/background.jpg",
         "chat_background_overlay": 0.55,
+        "voice_settings": {"voice": "杜小雯", "speed": 1.15, "auto_play": True, "default_input_mode": "voice", "continuous_voice": True},
         "status": "draft",
         "persona": {"customer_name": "陈先生", "identity": "企业主"},
         "script_items": [],
@@ -187,6 +188,8 @@ def test_activity_background_fields_roundtrip():
     assert data["chat_background_type"] == "url"
     assert data["chat_background_value"] == "https://example.com/background.jpg"
     assert data["chat_background_overlay"] == 0.55
+    assert data["voice_settings"]["default_input_mode"] == "voice"
+    assert data["voice_settings"]["continuous_voice"] is True
 
 
 def test_background_upload_requires_admin_and_image_type():
@@ -242,6 +245,32 @@ def test_stream_message_missing_model_emits_error_event_and_session_refreshes():
     refreshed = client.get(f"/api/practice/sessions/{session['id']}", headers=headers)
     assert refreshed.status_code == 200
     assert len(refreshed.json()["messages"]) >= 3
+
+
+def test_stream_message_records_voice_input_mode(monkeypatch):
+    async def fake_stream_customer_reply(activity, messages):
+        yield "好的，我了解了。"
+
+    monkeypatch.setattr(ai_service, "stream_customer_reply", fake_stream_customer_reply)
+
+    student_token = login("student", "student123")
+    headers = {"Authorization": f"Bearer {student_token}"}
+    activities = client.get("/api/public/activities", headers=headers).json()
+    session = client.post("/api/practice/sessions", json={"activity_id": activities[0]["id"]}, headers=headers).json()
+    with client.stream(
+        "POST",
+        f"/api/practice/sessions/{session['id']}/messages/stream",
+        json={"content": "我想了解贷款流程", "input_mode": "voice"},
+        headers=headers,
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: done" in body
+    refreshed = client.get(f"/api/practice/sessions/{session['id']}", headers=headers)
+    assert refreshed.status_code == 200
+    trainee_message = [item for item in refreshed.json()["messages"] if item["role"] == "trainee"][-1]
+    assert trainee_message["input_mode"] == "voice"
 
 
 def test_student_can_request_private_ai_hint(monkeypatch):
