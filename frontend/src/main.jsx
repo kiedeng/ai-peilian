@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -201,11 +202,27 @@ function backgroundStyle(activity) {
 
 function useToast() {
   const [toast, setToast] = useState(null);
-  function show(message, kind = 'error') {
+  const timerRef = useRef(null);
+
+  function show(message, kind = 'error', duration = 3400) {
+    if (timerRef.current) clearTimeout(timerRef.current);
     setToast({ message, kind });
-    window.setTimeout(() => setToast(null), 3400);
+    timerRef.current = window.setTimeout(() => {
+      setToast(null);
+      timerRef.current = null;
+    }, duration);
   }
-  return { toast, show };
+
+  function hide() {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast(null);
+  }
+
+  const toastEl = toast
+    ? <FloatingToast message={toast.message} kind={toast.kind} onClose={hide} />
+    : null;
+
+  return { toast, show, hide, toastEl };
 }
 
 function App() {
@@ -427,7 +444,7 @@ function AdminActivities() {
 function ActivityEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { toast, show } = useToast();
+  const { toast, show, toastEl } = useToast();
   const [activeStep, setActiveStep] = useState(0);
   const [activity, setActivity] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -444,7 +461,7 @@ function ActivityEditor() {
     try {
       const saved = await api(`/api/admin/activities/${id}`, { method: 'PUT', body: JSON.stringify(toApiActivity(activity, status)) });
       setActivity(fromApiActivity(saved));
-      show('配置已保存', 'success');
+      show('配置已保存', 'success', 2000);
     } catch (error) {
       show(error.message);
     } finally {
@@ -457,7 +474,7 @@ function ActivityEditor() {
     try {
       const saved = await api(`/api/admin/activities/${id}/publish`, { method: 'POST' });
       setActivity(fromApiActivity(saved));
-      show('活动已发布', 'success');
+      show('活动已发布', 'success', 2000);
     } catch (error) {
       show(error.message);
     }
@@ -465,6 +482,7 @@ function ActivityEditor() {
 
   return (
     <AdminShell wide>
+      {toastEl}
       <button className="back-button" onClick={() => navigate('/admin/activities')}><ArrowLeft size={16} /> 返回活动列表</button>
       <div className="editor-header">
         <div>
@@ -474,7 +492,6 @@ function ActivityEditor() {
         <StatusBadge status={activity.status} />
       </div>
       <StepBar active={activeStep} setActive={setActiveStep} />
-      {toast && <Notice message={toast.message} kind={toast.kind} />}
       <section className="wizard-card">
         {activeStep === 0 && <PersonaStep activity={activity} setActivity={setActivity} show={show} />}
         {activeStep === 1 && <ScriptStep activity={activity} setActivity={setActivity} />}
@@ -1557,6 +1574,30 @@ function Field({ label, value, onChange, textarea = false, type = 'text', requir
 
 function Notice({ message, kind = 'success' }) {
   return <div className={`notice ${kind}`}>{kind === 'error' ? <AlertCircle size={16} /> : <Check size={16} />}{message}</div>;
+}
+
+function FloatingToast({ message, kind = 'success', onClose }) {
+  const [visible, setVisible] = useState(false);
+  const [exiting, setExiting] = useState(false);
+
+  useEffect(() => {
+    requestAnimationFrame(() => setVisible(true));
+  }, []);
+
+  function handleClose() {
+    setExiting(true);
+    setTimeout(() => onClose?.(), 300);
+  }
+
+  const icon = kind === 'error' ? <AlertCircle size={18} /> : kind === 'warn' ? <AlertCircle size={18} /> : <Check size={18} />;
+
+  return createPortal(
+    <div className={`floating-toast ${kind} ${visible ? 'visible' : ''} ${exiting ? 'exiting' : ''}`} onClick={handleClose}>
+      <span className="floating-toast-icon">{icon}</span>
+      <span className="floating-toast-msg">{message}</span>
+    </div>,
+    document.body
+  );
 }
 
 function StatusBadge({ status }) {

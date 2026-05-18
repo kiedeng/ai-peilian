@@ -363,6 +363,73 @@ input:focus, textarea:focus, select:focus {
   color: #ffc1cc;
 }
 
+/* Floating toast notification */
+.floating-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 12px;
+  backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .35), 0 0 0 1px rgba(255, 255, 255, .08);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0;
+  transition: transform .35s cubic-bezier(.34, 1.56, .64, 1), opacity .25s ease;
+}
+.floating-toast.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+.floating-toast.exiting {
+  transform: translateX(-50%) translateY(-100%);
+  opacity: 0;
+  transition: transform .3s ease-in, opacity .2s ease-in;
+}
+.floating-toast.success {
+  background: linear-gradient(135deg, rgba(20, 184, 166, .25), rgba(45, 212, 191, .15));
+  border: 1px solid rgba(45, 212, 191, .45);
+  color: #9ff8eb;
+}
+.floating-toast.error {
+  background: linear-gradient(135deg, rgba(239, 68, 68, .25), rgba(255, 95, 126, .15));
+  border: 1px solid rgba(255, 95, 126, .45);
+  color: #ffc1cc;
+}
+.floating-toast.warn {
+  background: linear-gradient(135deg, rgba(217, 119, 6, .25), rgba(245, 158, 11, .15));
+  border: 1px solid rgba(245, 158, 11, .45);
+  color: #fde68a;
+}
+.floating-toast-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.floating-toast.success .floating-toast-icon {
+  background: rgba(45, 212, 191, .2);
+}
+.floating-toast.error .floating-toast-icon {
+  background: rgba(255, 95, 126, .2);
+}
+.floating-toast.warn .floating-toast-icon {
+  background: rgba(245, 158, 11, .2);
+}
+.floating-toast-msg {
+  letter-spacing: .02em;
+}
+
 .table-card, .wizard-card, .dashboard-panel, .report-card, .metric-card, .submitted-guide {
   backdrop-filter: blur(22px) saturate(135%);
   background: linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.065));
