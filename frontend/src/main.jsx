@@ -170,6 +170,70 @@ function joinLines(value) {
   return (value || []).join('\n');
 }
 
+function createWavBlob(chunks, sampleRate) {
+  const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const samples = new Float32Array(length);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  });
+
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  let dataOffset = 44;
+  for (const sample of samples) {
+    const value = Math.max(-1, Math.min(1, sample));
+    view.setInt16(dataOffset, value < 0 ? value * 0x8000 : value * 0x7fff, true);
+    dataOffset += 2;
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+function writeAscii(view, offset, text) {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
+}
+
+async function createWavRecorder(stream) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error('当前浏览器不支持录音编码，请使用文字输入。');
+  const audioContext = new AudioContextClass();
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  processor.onaudioprocess = (event) => {
+    chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+  };
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+
+  return {
+    async stop() {
+      processor.disconnect();
+      source.disconnect();
+      stream.getTracks().forEach((track) => track.stop());
+      await audioContext.close();
+      return createWavBlob(chunks, audioContext.sampleRate);
+    },
+  };
+}
+
 function authHeaders(extra = {}) {
   const token = localStorage.getItem(TOKEN_KEY);
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
@@ -777,7 +841,6 @@ function PracticePage() {
   const [recording, setRecording] = useState(false);
   const [muted, setMuted] = useState(false);
   const recorderRef = useRef(null);
-  const chunksRef = useRef([]);
   const audioRef = useRef(null);
   const bottomRef = useRef(null);
 
@@ -862,8 +925,19 @@ function PracticePage() {
 
   async function toggleRecord() {
     if (recording) {
-      recorderRef.current?.stop();
       setRecording(false);
+      try {
+        const blob = await recorderRef.current?.stop();
+        if (!blob || !blob.size) return;
+        const form = new FormData();
+        form.append('file', blob, 'voice.wav');
+        const result = await api('/api/speech/transcribe', { method: 'POST', body: form });
+        setDraft(result.text);
+      } catch (error) {
+        show(error.message);
+      } finally {
+        recorderRef.current = null;
+      }
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -872,23 +946,7 @@ function PracticePage() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      chunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => event.data.size && chunksRef.current.push(event.data);
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        const form = new FormData();
-        form.append('file', blob, 'voice.webm');
-        try {
-          const result = await api('/api/speech/transcribe', { method: 'POST', body: form });
-          setDraft(result.text);
-        } catch (error) {
-          show(error.message);
-        }
-      };
-      recorder.start();
+      recorderRef.current = await createWavRecorder(stream);
       setRecording(true);
     } catch {
       show('无法访问麦克风，请检查浏览器授权。');

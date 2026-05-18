@@ -213,6 +213,21 @@ AI 提示使用记录：共 {len(hints)} 次。提示内容如下：
                 )
                 response.raise_for_status()
                 return response.json().get("text", "")
+        except httpx.HTTPStatusError as exc:
+            response = exc.response
+            upstream_detail = response.text.strip()[:500] or response.reason_phrase
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "语音识别服务调用失败："
+                    f"上游返回 {response.status_code} {response.reason_phrase}；"
+                    f"模型={self.settings.openai_stt_model}；"
+                    f"文件类型={content_type or 'unknown'}；"
+                    f"上游响应={upstream_detail}"
+                ),
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=f"语音识别服务连接失败：{exc}") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"语音识别服务调用失败：{exc}") from exc
 
