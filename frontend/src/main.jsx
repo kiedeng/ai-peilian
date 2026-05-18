@@ -487,11 +487,11 @@ function AdminActivities() {
           <tbody>
             {activities.map((item) => (
               <tr key={item.id}>
-                <td><b>{item.title}</b><span>{item.description || '暂无描述'}</span></td>
-                <td><StatusBadge status={item.status} /></td>
-                <td>{formatDate(item.starts_at)} - {formatDate(item.ends_at)}</td>
-                <td>{item.average_minutes} 分钟</td>
-                <td className="actions">
+                <td data-label="活动"><b>{item.title}</b><span>{item.description || '暂无描述'}</span></td>
+                <td data-label="状态"><StatusBadge status={item.status} /></td>
+                <td data-label="有效期">{formatDate(item.starts_at)} - {formatDate(item.ends_at)}</td>
+                <td data-label="训练时长">{item.average_minutes} 分钟</td>
+                <td data-label="操作" className="actions">
                   <button onClick={() => navigate(`/admin/activities/${item.id}/edit`)}>编辑</button>
                   <button onClick={() => remove(item.id)}>删除</button>
                 </td>
@@ -705,7 +705,7 @@ function ScriptStep({ activity, setActivity }) {
               <Field label="优先级" type="number" value={item.priority ?? 50} onChange={(value) => update(index, { priority: value })} />
               <label className="toggle-field compact-toggle"><input type="checkbox" checked={item.enabled !== false} onChange={(event) => update(index, { enabled: event.target.checked })} /> 启用</label>
             </div>
-            <button className="icon-danger" onClick={() => remove(index)} title="删除"><Trash2 size={16} /></button>
+            <button className="icon-danger" onClick={() => remove(index)} title="删除" aria-label="删除话术"><Trash2 size={16} /></button>
           </div>
         ))}
       </div>
@@ -842,11 +842,55 @@ function PracticePage() {
   const [muted, setMuted] = useState(false);
   const recorderRef = useRef(null);
   const audioRef = useRef(null);
-  const bottomRef = useRef(null);
+  const messagesRef = useRef(null);
 
   useEffect(() => { api(`/api/public/activities/${id}`).then(setActivity).catch((error) => show(error.message)); }, [id]);
   useEffect(() => { setMessages(session?.messages || []); }, [session]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streaming]);
+  useEffect(() => {
+    const node = messagesRef.current;
+    if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'auto' });
+  }, [messages, streaming]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+
+    const syncVisualViewport = () => {
+      const visualHeight = viewport?.height || window.innerHeight;
+      const visualTop = viewport?.offsetTop || 0;
+      const keyboardInset = Math.max(0, window.innerHeight - visualHeight - visualTop);
+
+      document.documentElement.style.setProperty('--practice-visual-height', `${visualHeight}px`);
+      document.documentElement.style.setProperty('--practice-visual-top', `${visualTop}px`);
+      document.documentElement.style.setProperty('--practice-keyboard-inset', `${keyboardInset}px`);
+      if (document.activeElement?.tagName === 'TEXTAREA') {
+        window.setTimeout(() => {
+          const node = messagesRef.current;
+          if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'auto' });
+        }, 80);
+      }
+    };
+
+    syncVisualViewport();
+    window.addEventListener('resize', syncVisualViewport);
+    window.addEventListener('orientationchange', syncVisualViewport);
+    viewport?.addEventListener('resize', syncVisualViewport);
+    viewport?.addEventListener('scroll', syncVisualViewport);
+    return () => {
+      window.removeEventListener('resize', syncVisualViewport);
+      window.removeEventListener('orientationchange', syncVisualViewport);
+      viewport?.removeEventListener('resize', syncVisualViewport);
+      viewport?.removeEventListener('scroll', syncVisualViewport);
+      document.documentElement.style.removeProperty('--practice-visual-height');
+      document.documentElement.style.removeProperty('--practice-visual-top');
+      document.documentElement.style.removeProperty('--practice-keyboard-inset');
+    };
+  }, []);
+
+  function handleComposerFocus() {
+    window.setTimeout(() => {
+      const node = messagesRef.current;
+      if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'auto' });
+    }, 260);
+  }
 
   async function start() {
     setStreaming(true);
@@ -976,7 +1020,7 @@ function PracticePage() {
   const submitted = session?.assessment_status && session.assessment_status !== 'not_submitted';
   const canSubmit = Boolean(session && !submitted && !streaming);
   return (
-    <div className="practice-page" style={backgroundStyle(activity)}>
+    <div className={`practice-page ${session ? 'practice-chat-page' : ''}`} style={backgroundStyle(activity)}>
       <div className="practice-overlay" style={{ backgroundColor: `rgba(6, 16, 31, ${activity.chat_background_overlay || 0})` }} />
       <TopNav userSide />
       <main className={`practice-layout ${session ? 'chat-only' : 'start-only'}`}>
@@ -1002,14 +1046,13 @@ function PracticePage() {
             </div>
             {canSubmit && <button className="chat-submit-button" onClick={submitForReview}>提交质检</button>}
           </header>
-          <div className="messages">
+          <div className="messages" ref={messagesRef}>
             {messages.map((item) => <MessageBubble key={item.id} item={item} onPlay={() => playText(item.content)} onUseHint={() => setDraft(item.content)} />)}
             {streaming && messages.some((item) => item.streaming && !item.content) && <div className="typing">AI 客户正在输入...</div>}
             {!session && <div className="empty">点击开始后，AI 客户会先发起对话。</div>}
-            <div ref={bottomRef} />
           </div>
           <div className="composer">
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleDraftKeyDown} disabled={!session || streaming || submitted} placeholder="输入你的回复话术，也可以点击录音转写..." />
+            <textarea value={draft} onFocus={handleComposerFocus} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleDraftKeyDown} disabled={!session || streaming || submitted} />
             <div className="composer-actions">
               <button
                 aria-label={recording ? '停止录音' : '开始录音'}
@@ -1026,9 +1069,9 @@ function PracticePage() {
                 onClick={requestHint}
                 disabled={!session || streaming || hintLoading || submitted}
               >
-                <Sparkles size={18} /> {hintLoading ? '生成中' : 'AI 提示'}
+                <Sparkles size={18} /> <span>{hintLoading ? '生成中' : 'AI 提示'}</span>
               </button>
-              <button className="primary compact" onClick={send} disabled={!session || streaming || submitted || !draft.trim()}><Send size={17} /> 发送</button>
+              <button className="primary compact send-button" aria-label="发送" title="发送" onClick={send} disabled={!session || streaming || submitted || !draft.trim()}><Send size={17} /> <span>发送</span></button>
             </div>
           </div>
         </section>}
@@ -1089,10 +1132,10 @@ function ReviewQueue() {
           <tbody>
             {reports.map((report) => (
               <tr key={report.id}>
-                <td><b>{formatEntityId('R', report.id)}</b><span>会话 {formatEntityId('S', report.session_id)} / 活动 {formatEntityId('A', report.activity_id)} / 学员 {formatEntityId('U', report.user_id)}</span></td>
-                <td><ReportStatus status={report.status} /></td>
-                <td>{formatDateTime(report.submitted_at)}</td>
-                <td className="actions">
+                <td data-label="报告"><b>{formatEntityId('R', report.id)}</b><span>会话 {formatEntityId('S', report.session_id)} / 活动 {formatEntityId('A', report.activity_id)} / 学员 {formatEntityId('U', report.user_id)}</span></td>
+                <td data-label="状态"><ReportStatus status={report.status} /></td>
+                <td data-label="提交时间">{formatDateTime(report.submitted_at)}</td>
+                <td data-label="操作" className="actions">
                   <button onClick={() => navigate(`/admin/reviews/${report.id}`)}>查看</button>
                 </td>
               </tr>
@@ -1214,29 +1257,29 @@ function MyReports() {
                 const scoreTone = getScoreTone(score);
                 return (
                   <tr key={report.id}>
-                    <td>
+                    <td data-label="报告">
                       <b>{formatEntityId('R', report.id)}</b>
                       <span>会话 {formatEntityId('S', report.session_id)} / 活动 {formatEntityId('A', report.activity_id)}</span>
                     </td>
-                    <td>
+                    <td data-label="总分">
                       <div className="score-cell">
                         <strong className={`score-value ${scoreTone.className}`}>{score ?? '-'}</strong>
                         <span>{scoreTone.label}</span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="评级">
                       <span className={`score-pill ${scoreTone.className}`}>{scoreTone.label}</span>
                     </td>
-                    <td>
+                    <td data-label="维度表现">
                       <b>{dimensions.length} 项维度</b>
                       <span>{summary || '暂无维度摘要'}</span>
                     </td>
-                    <td>
+                    <td data-label="风险">
                       <b>{riskCount}</b>
                       <span>{riskCount ? '存在合规提示' : '未见明显风险'}</span>
                     </td>
-                    <td>{formatDateTime(report.published_at || report.updated_at)}</td>
-                    <td className="actions">
+                    <td data-label="发布时间">{formatDateTime(report.published_at || report.updated_at)}</td>
+                    <td data-label="操作" className="actions">
                       <Link className="text-button" to={`/reports/${report.id}`}>查看详情</Link>
                     </td>
                   </tr>
@@ -1563,9 +1606,9 @@ function ReportCard({ report = {}, title = '评分预览', status }) {
               const dimensionTone = getScoreTone(item.score);
               return (
                 <tr key={item.dimension_id || item.name}>
-                  <td>{item.name}</td>
-                  <td><span className={`score-pill ${dimensionTone.className}`}>{item.score ?? '-'}</span></td>
-                  <td>{item.evidence || item.suggestion || '-'}</td>
+                  <td data-label="维度">{item.name}</td>
+                  <td data-label="得分"><span className={`score-pill ${dimensionTone.className}`}>{item.score ?? '-'}</span></td>
+                  <td data-label="摘要">{item.evidence || item.suggestion || '-'}</td>
                 </tr>
               );
             })}
@@ -1584,8 +1627,8 @@ function ReportCard({ report = {}, title = '评分预览', status }) {
             <tbody>
               {report.compliance_risks.map((risk, index) => (
                 <tr key={index}>
-                  <td>{risk.phrase}</td>
-                  <td>{risk.rule}</td>
+                  <td data-label="合规风险">{risk.phrase}</td>
+                  <td data-label="规则">{risk.rule}</td>
                 </tr>
               ))}
             </tbody>
@@ -1602,7 +1645,7 @@ function ReportCard({ report = {}, title = '评分预览', status }) {
           <tbody>
             {(report.improvement_suggestions || report.issues || []).map((item, index) => (
               <tr key={index}>
-                <td>{item}</td>
+                <td data-label="改进建议">{item}</td>
               </tr>
             ))}
           </tbody>

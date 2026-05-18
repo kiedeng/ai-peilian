@@ -1471,6 +1471,9 @@ td span {
 }
 
 @media (max-width: 640px) {
+  html, body {
+    overflow-x: hidden;
+  }
   .page-container { padding: 18px; }
   .login-page { gap: 28px; padding: 20px; }
   .login-hero h1 { font-size: 38px; }
@@ -1498,21 +1501,82 @@ td span {
   }
   .report-score-summary { padding: 12px 14px; width: 100%; }
   .report-score-summary strong { font-size: 34px; }
-  .report-table, .detail-table { min-width: 720px; }
-  .top-nav nav { gap: 4px; width: 100%; }
-  .top-nav a:not(.brand-link), .text-button { padding: 7px 8px; }
-  .practice-layout { gap: 12px; padding: 10px; }
+  .top-nav {
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+  }
+  .brand-link {
+    width: 100%;
+  }
+  .top-nav nav {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .top-nav a:not(.brand-link), .text-button {
+    justify-content: center;
+    min-height: 38px;
+    padding: 8px;
+  }
+  .practice-page {
+    min-height: 100svh;
+    min-height: 100dvh;
+  }
+  .practice-chat-page {
+    height: 100svh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .practice-page .top-nav {
+    display: none;
+  }
+  .practice-layout {
+    gap: 12px;
+    min-height: 100dvh;
+    padding: 10px;
+  }
   .practice-layout.start-only { padding-top: 14px; }
-  .practice-layout.chat-only { height: calc(100dvh - 86px); }
+  .practice-layout.chat-only {
+    bottom: 0;
+    height: 100dvh;
+    left: 0;
+    max-width: none;
+    padding: 0;
+    position: fixed;
+    right: 0;
+    top: 0;
+  }
   .practice-side { padding: 16px; }
   .practice-side h1 { font-size: 22px; }
   .chat-workspace {
-    border-radius: var(--radius);
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    background:
+      linear-gradient(180deg, rgba(9, 18, 32, .96), rgba(8, 17, 31, .94)),
+      radial-gradient(circle at 20% 0%, rgba(79, 140, 255, .12), transparent 18rem);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
   }
-  .chat-header { align-items: center; padding: 10px; }
-  .chat-title { gap: 8px; }
+  .chat-header {
+    align-items: center;
+    background: rgba(7, 16, 30, .94);
+    border-bottom: 1px solid rgba(163, 185, 221, .16);
+    min-height: 54px;
+    padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+  }
+  .chat-title {
+    flex: 1 1 auto;
+    gap: 8px;
+    overflow: hidden;
+  }
   .chat-back-button {
+    background: transparent;
+    border-color: transparent;
     flex-basis: 32px;
     height: 32px;
     width: 32px;
@@ -1522,30 +1586,113 @@ td span {
     height: 34px;
     width: 34px;
   }
-  .chat-submit-button { height: 36px; padding: 7px 10px; white-space: nowrap; }
-  .messages { gap: 13px; padding: 14px 12px; }
-  .message { gap: 8px; max-width: 100%; }
+  .chat-submit-button {
+    border-radius: 999px;
+    height: 34px;
+    padding: 6px 10px;
+    white-space: nowrap;
+  }
+  .messages {
+    background:
+      radial-gradient(circle at 0% 0%, rgba(79,140,255,.09), transparent 20rem),
+      linear-gradient(180deg, rgba(7,16,30,.2), rgba(7,16,30,.42));
+    gap: 12px;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    padding: 14px 12px calc(76px + max(0px, var(--practice-keyboard-inset, 0px)));
+    scroll-padding-bottom: calc(76px + max(0px, var(--practice-keyboard-inset, 0px)));
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+  .message {
+    gap: 8px;
+    max-width: 100%;
+    width: 100%;
+  }
+  .message.ai_customer {
+    justify-content: flex-start;
+  }
+  .message.trainee {
+    justify-content: flex-start;
+  }
+  .message.ai_hint {
+    justify-content: center;
+    padding: 0 20px;
+  }
   .avatar {
     flex-basis: 32px;
     height: 32px;
     width: 32px;
   }
-  .message > div:last-child { padding: 10px 11px; }
+  .message > div:last-child {
+    border-color: rgba(163, 185, 221, .2);
+    border-radius: 3px 14px 14px 14px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .18);
+    max-width: calc(100vw - 94px);
+    padding: 9px 11px;
+  }
+  .message.trainee > div:last-child {
+    border-radius: 14px 3px 14px 14px;
+  }
+  .message.ai_hint > div:last-child {
+    max-width: min(100%, 320px);
+    text-align: left;
+  }
+  .message p {
+    overflow-wrap: anywhere;
+  }
+  .listen-button {
+    min-height: 28px;
+  }
+  .typing {
+    align-self: center;
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(163, 185, 221, .14);
+    border-radius: 999px;
+    padding: 6px 12px;
+  }
   .composer {
+    align-items: end;
+    background: rgba(7, 16, 30, .96);
+    border-top: 1px solid rgba(163, 185, 221, .18);
+    bottom: max(0px, var(--practice-keyboard-inset, 0px));
     gap: 8px;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    left: 0;
     padding: 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    position: fixed;
+    right: 0;
+    z-index: 20;
   }
   .composer textarea {
     height: 38px;
     min-height: 38px;
+    max-height: 88px;
     padding: 8px 10px;
   }
-  .composer-actions { flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-  .composer button { height: 38px; padding: 8px 10px; }
+  .composer-actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+  .composer button {
+    border-radius: 50%;
+    flex: 0 0 38px;
+    height: 38px;
+    justify-content: center;
+    padding: 0;
+    width: 38px;
+  }
+  .composer button span {
+    display: none;
+  }
   .composer .record-button {
     height: 38px;
     width: 38px;
+  }
+  .composer .send-button {
+    box-shadow: 0 10px 24px rgba(79, 140, 255, .24);
   }
   .submitted-guide {
     margin: 18px 0;
@@ -1554,4 +1701,114 @@ td span {
   .submitted-meta { grid-template-columns: 1fr; text-align: center; }
   .submitted-actions { align-items: stretch; flex-direction: column; }
   .submitted-actions a { justify-content: center; }
+  .table-card {
+    overflow: visible;
+  }
+  .table-card table,
+  .table-card thead,
+  .table-card tbody,
+  .table-card tr,
+  .table-card th,
+  .table-card td,
+  .table-wrap table,
+  .table-wrap thead,
+  .table-wrap tbody,
+  .table-wrap tr,
+  .table-wrap th,
+  .table-wrap td {
+    display: block;
+  }
+  .table-card thead,
+  .table-wrap thead {
+    display: none;
+  }
+  .table-card table,
+  .report-table,
+  .detail-table,
+  .compact-table {
+    min-width: 0;
+  }
+  .table-card tbody,
+  .table-wrap tbody {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+  }
+  .table-card tr,
+  .table-wrap tr {
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(163, 185, 221, .16);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .12);
+    padding: 12px;
+  }
+  .table-card td,
+  .table-wrap td {
+    border: 0;
+    display: grid;
+    gap: 5px;
+    grid-template-columns: 86px minmax(0, 1fr);
+    padding: 8px 0;
+  }
+  .table-card td::before,
+  .table-wrap td::before {
+    color: #91a5c3;
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .table-card td:not([data-label])::before,
+  .table-wrap td:not([data-label])::before {
+    content: "";
+  }
+  .table-card td.actions,
+  .table-wrap td.actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding-top: 10px;
+  }
+  .table-card td.actions::before,
+  .table-wrap td.actions::before {
+    display: none;
+  }
+  .actions button,
+  .actions .text-button {
+    background: rgba(79,140,255,.14);
+    border: 1px solid rgba(79,140,255,.24);
+    border-radius: var(--radius);
+    justify-content: center;
+    margin-right: 0;
+    min-height: 36px;
+    padding: 8px 12px;
+  }
+  .config-table {
+    gap: 12px;
+  }
+  .config-row.header {
+    display: none;
+  }
+  .config-row.script-row {
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(163, 185, 221, .16);
+    border-radius: var(--radius);
+    padding: 12px;
+  }
+  .config-row .icon-danger {
+    justify-self: end;
+    min-height: 40px;
+    min-width: 44px;
+  }
+  .wizard-card {
+    padding: 16px;
+  }
+  .wizard-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wizard-actions button {
+    justify-content: center;
+    min-height: 40px;
+  }
 }
